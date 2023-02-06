@@ -1,6 +1,7 @@
 "use strict";
 
 import EventEmitter from 'events';
+import { CardReader } from './NFC';
 import {
 	ConnectError,
 	DisconnectError,
@@ -13,7 +14,6 @@ import {
 	GetUIDError,
 	CARD_NOT_CONNECTED,
 	OPERATION_FAILED,
-	UNKNOWN_ERROR,
 	FAILURE,
 } from './errors';
 
@@ -27,33 +27,54 @@ export const KEY_TYPE_B = 0x61;
 export const CONNECT_MODE_DIRECT = 'CONNECT_MODE_DIRECT';
 export const CONNECT_MODE_CARD = 'CONNECT_MODE_CARD';
 
+export type ReaderConnectMode = typeof CONNECT_MODE_DIRECT | typeof CONNECT_MODE_CARD;
+
+export type ReaderConnection = {
+	type: number;
+	protocol: number;
+}
+
+export type Card = {
+	atr?: Buffer;
+	standard?: "TAG_ISO_14443_3" | "TAG_ISO_14443_4";
+	type?: string;
+	uid?: string;
+	data?: Buffer;
+}
+
+interface Reader {
+	on(type: "card", listener: (card: Card) => void): this;
+	once(type: "card", listener: (card: Card) => void): this;
+	on(type: "card.off", listener: (card: Card) => void): this;
+	once(type: "card.off", listener: (card: Card) => void): this;
+	on(type: "error", listener: (error: any) => void): this;
+	once(type: "error", listener: (error: any) => void): this;
+	on(type: "end", listener: () => void): this;
+	once(type: "end", listener: () => void): this;
+}
 
 class Reader extends EventEmitter {
 
-	reader = null;
-	logger = null;
-
-	connection = null;
-	card = null;
+	connection: ReaderConnection | null = null;
+	card: Card | null = null;
 
 	autoProcessing = true;
-	_aid = null;
+	_aid: ((card: Card) => any) | Buffer | string | null = null;
 
-	keyStorage = {
-		'0': null,
-		'1': null,
+	keyStorage: { [keyNumber: number]: Buffer | null } = {
+		0: null,
+		1: null,
 	};
 
-	pendingLoadAuthenticationKey = {};
+	/** Keys that are (by their actual string representation) waiting to be loaded */
+	pendingLoadAuthenticationKey: {[ keyHex: string ]: ReturnType<Reader['loadAuthenticationKey']> } = {};
 
 	/**
 	 * Reverses a copy of a given buffer
 	 * Does NOT mutate the given buffer, returns a reversed COPY
 	 * For mutating reverse use native .reverse() method on a buffer instance
-	 * @param src {Buffer} a Buffer instance
-	 * @returns {Buffer}
 	 */
-	static reverseBuffer(src) {
+	static reverseBuffer(src: Buffer): Buffer {
 
 		const buffer = Buffer.allocUnsafe(src.length);
 
@@ -66,7 +87,7 @@ class Reader extends EventEmitter {
 
 	}
 
-	static selectStandardByAtr(atr) {
+	static selectStandardByAtr(atr: Buffer) {
 
 		// TODO: better detecting card types
 		if (atr[5] && atr[5] === 0x4f) {
@@ -82,7 +103,7 @@ class Reader extends EventEmitter {
 		return this._aid;
 	}
 
-	set aid(value) {
+	set aid(value: Reader['_aid']) {
 
 		if (typeof value === 'function' || Buffer.isBuffer(value)) {
 			this._aid = value;
@@ -97,33 +118,18 @@ class Reader extends EventEmitter {
 
 	}
 
+	/** E.g. `"HID OMNIKEY 5427CK"` */
 	get name() {
 		return this.reader.name;
 	}
 
-	constructor(reader, logger) {
-
+	constructor(
+		/** PCSCLite CardReader instance used internally for read/write/connection operations */
+		public reader: CardReader, 
+		/** Logger class */
+		public logger: Pick<Console, 'log' | 'debug' | 'info' | 'warn' | 'error'>,
+	) {
 		super();
-
-		this.reader = reader;
-
-		if (logger) {
-			this.logger = logger;
-		}
-		else {
-			this.logger = {
-				log: function () {
-				},
-				debug: function () {
-				},
-				info: function () {
-				},
-				warn: function () {
-				},
-				error: function () {
-				},
-			};
-		}
 
 		this.reader.on('error', (err) => {
 
@@ -212,7 +218,15 @@ class Reader extends EventEmitter {
 
 	}
 
-	connect(mode = CONNECT_MODE_CARD) {
+	/**
+	 * @param protocol Either T=0 or T=1 defined as {@link CardReader.SCARD_PROTOCOL_T0} or
+	 * {@link CardReader.SCARD_PROTOCOL_T1}. If connecting in direct mode when no card is present
+	 * this must be {@link CardReader.SCARD_PROTOCOL_T0}. Default behaviour is to use
+	 * this.SCARD_PROTOCOL_T0 | this.SCARD_PROTOCOL_T1 if not defined (not sure how this works maybe automatic..?)
+	 */
+	connect(mode: ReaderConnectMode = CONNECT_MODE_CARD, protocol?: CardReader['SCARD_PROTOCOL_T0'] | CardReader['SCARD_PROTOCOL_T1']) {
+
+		// console.log(`Connect to ${this.name} in mode ${mode} with protocol ${protocol}`);
 
 		const modes = {
 			[CONNECT_MODE_DIRECT]: this.reader.SCARD_SHARE_DIRECT,
@@ -230,8 +244,10 @@ class Reader extends EventEmitter {
 			// connect card
 			this.reader.connect({
 				share_mode: modes[mode],
-				//protocol: this.reader.SCARD_PROTOCOL_UNDEFINED
-			}, (err, protocol) => {
+				...protocol != undefined ? { protocol } : {}
+			}, (err, connectionProtocol) => {
+
+				// console.log(`Connected to ${this.name} in mode ${mode} with protocol ${connectionProtocol}`);
 
 				if (err) {
 					const error = new ConnectError(FAILURE, 'An error occurred while connecting.', err);
@@ -241,7 +257,7 @@ class Reader extends EventEmitter {
 
 				this.connection = {
 					type: modes[mode],
-					protocol: protocol,
+					protocol: connectionProtocol || 0,
 				};
 
 				this.logger.debug('connected', this.connection);
@@ -285,20 +301,27 @@ class Reader extends EventEmitter {
 
 	}
 
-	transmit(data, responseMaxLength) {
+	transmit(data: Buffer, responseMaxLength: number): Promise<Buffer> {
 
-		if (!this.card || !this.connection) {
-			throw new TransmitError(CARD_NOT_CONNECTED, 'No card or connection available.');
+		if (!this.card) {
+			throw new TransmitError(CARD_NOT_CONNECTED, 'No card');
 		}
+
+		const calledFrom = new Error()
 
 		return new Promise((resolve, reject) => {
 
 			this.logger.debug('transmitting', data, responseMaxLength);
 
+			if (!this.connection) {
+				return reject(new TransmitError(CARD_NOT_CONNECTED, 'No card or connection available.'))
+			}
+
 			this.reader.transmit(data, responseMaxLength, this.connection.protocol, (err, response) => {
 
 				if (err) {
 					const error = new TransmitError(FAILURE, 'An error occurred while transmitting.', err);
+					console.log(`Rejecting promise returned by pcsc transmit with err`, err, `Originally called from`, calledFrom.stack);
 					return reject(error);
 				}
 
@@ -312,7 +335,7 @@ class Reader extends EventEmitter {
 
 	}
 
-	control(data, responseMaxLength) {
+	control(data: Buffer, responseMaxLength: number): Promise<Buffer> {
 
 		if (!this.connection) {
 			throw new ControlError('not_connected', 'No connection available.');
@@ -322,7 +345,14 @@ class Reader extends EventEmitter {
 
 			this.logger.debug('transmitting control', data, responseMaxLength);
 
-			this.reader.control(data, this.reader.IOCTL_CCID_ESCAPE, responseMaxLength, (err, response) => {
+			// CORRECT IOCTL_CCID_ESCAPE for each platform. @pokusew\pcsclite\src\cardreader.h has
+			// wrong definition for WIN32. For some reason (driver differences?) the constants are
+			// completely different between platforms.
+			const IOCTL_CCID_ESCAPE = /^win/.test(process.platform)
+				? this.reader.SCARD_CTL_CODE(3500)  // (0x31 << 16 | 3500 << 2) = 0x3136B0
+				: this.reader.SCARD_CTL_CODE(1)  // 0x42000000 + 1
+
+			this.reader.control(data, IOCTL_CCID_ESCAPE, responseMaxLength, (err, response) => {
 
 				if (err) {
 					const error = new ControlError(FAILURE, 'An error occurred while transmitting control.', err);
@@ -339,7 +369,7 @@ class Reader extends EventEmitter {
 
 	}
 
-	async loadAuthenticationKey(keyNumber, key) {
+	async loadAuthenticationKey(keyNumber: number, key: string | Buffer | number[]) {
 
 		if (!(keyNumber === 0 || keyNumber === 1)) {
 			throw new LoadAuthenticationKeyError('invalid_key_number');
@@ -372,12 +402,9 @@ class Reader extends EventEmitter {
 			...key, // Data In: Key (6 bytes)
 		]);
 
-		let response = null;
-
 		try {
 
-			response = await this.transmit(packet, 2);
-
+			var response = await this.transmit(packet, 2);
 
 		} catch (err) {
 
@@ -391,39 +418,58 @@ class Reader extends EventEmitter {
 			throw new LoadAuthenticationKeyError(OPERATION_FAILED, `Load authentication key operation failed: Status code: ${statusCode}`);
 		}
 
-		this.keyStorage[keyNumber] = key;
+		console.log(`loaded key, setting this.keyStorage[${keyNumber}] = ${key}`)
+		this.keyStorage[keyNumber] = key as Buffer;
 
 		return keyNumber;
 
 	}
 
+	/** Key `null` will be passed when the caller wants to know if there is an UNUSED key slot */
+	findKeyNumber(key: string | null): number | undefined {
+		const keyNumber = Object.keys(this.keyStorage).find(k => {
+			const keyVal = this.keyStorage[+k]
+			if (key === null)
+				return keyVal === null
+			else
+				return keyVal?.toString('hex').toLowerCase() === key.toLowerCase()
+		})
+		return keyNumber === undefined ? undefined : +keyNumber
+	}
+
 	// for PC/SC V2.01 use obsolete = true
 	// for PC/SC V2.07 use obsolete = false [default]
-	async authenticate(blockNumber, keyType, key, obsolete = false) {
+	/**
+	 * @param blockNumber The block on the mifare card to authenticate to
+	 * @param keyType One of the exported KEY_TYPE_A or KEY_TYPE_B
+	 * @param key The key as a hex string
+	 */
+	async authenticate(blockNumber: number, keyType: typeof KEY_TYPE_A | typeof KEY_TYPE_B, key: string, obsolete = false) {
+		let keyNumber = this.findKeyNumber(key)
 
-		let keyNumber = Object.keys(this.keyStorage).find(n => this.keyStorage[n] === key);
+		console.log(`Result finding key ${key} in keyStorage: keyNumber = ${keyNumber}`)
 
 		// key is not in the storage
-		if (!keyNumber) {
+		if (keyNumber === undefined) {
 
 			// If there isn't already an authentication process happening for this key, start it
 			if (!this.pendingLoadAuthenticationKey[key]) {
 
 				// set key number to first
-				keyNumber = Object.keys(this.keyStorage)[0];
+				keyNumber = +Object.keys(this.keyStorage)[0];
 
 				// if this number is not free
 				if (this.keyStorage[keyNumber] !== null) {
 					// try to find any free number
-					const freeNumber = Object.keys(this.keyStorage).find(n => this.keyStorage[n] === null);
+					const freeNumber = this.findKeyNumber(null)
 					// if we find, we use it, otherwise the first will be used and rewritten
 					if (freeNumber) {
-						keyNumber = freeNumber;
+						keyNumber = +freeNumber;
 					}
 				}
 
 				// Store the authentication promise in case other blocks are in process of authentication
-				this.pendingLoadAuthenticationKey[key] = this.loadAuthenticationKey(parseInt(keyNumber), key);
+				this.pendingLoadAuthenticationKey[key] = this.loadAuthenticationKey(keyNumber, key);
 
 			}
 
@@ -489,7 +535,7 @@ class Reader extends EventEmitter {
 
 	}
 
-	async read(blockNumber, length, blockSize = 4, packetSize = 16, readClass = 0xff) {
+	async read(blockNumber: number, length: number, blockSize = 4, packetSize = 16, readClass = 0xff) {
 
 		if (!this.card) {
 			throw new ReadError(CARD_NOT_CONNECTED);
@@ -501,7 +547,7 @@ class Reader extends EventEmitter {
 
 			const p = Math.ceil(length / packetSize);
 
-			const commands = [];
+			const commands: Promise<Buffer>[] = [];
 
 			for (let i = 0; i < p; i++) {
 
@@ -515,11 +561,7 @@ class Reader extends EventEmitter {
 
 			}
 
-			return Promise.all(commands)
-				.then(values => {
-					// console.log(values);
-					return Buffer.concat(values, length);
-				});
+			return Promise.all(commands).then(values => Buffer.concat(values, length))
 
 		}
 
@@ -562,7 +604,7 @@ class Reader extends EventEmitter {
 
 	}
 
-	async write(blockNumber, data, blockSize = 4) {
+	async write(blockNumber: number, data: Buffer, blockSize = 4) {
 
 		if (!this.card) {
 			throw new WriteError(CARD_NOT_CONNECTED);
@@ -578,7 +620,7 @@ class Reader extends EventEmitter {
 
 			const p = data.length / blockSize;
 
-			const commands = [];
+			const commands: Promise<boolean>[] = [];
 
 			for (let i = 0; i < p; i++) {
 
@@ -595,11 +637,7 @@ class Reader extends EventEmitter {
 
 			}
 
-			return Promise.all(commands)
-				.then(values => {
-					// console.log(values);
-					return values;
-				});
+			return Promise.all(commands).then(() => true)
 
 		}
 
