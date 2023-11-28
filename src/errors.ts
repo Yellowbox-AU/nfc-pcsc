@@ -4,20 +4,19 @@
 export const UNKNOWN_ERROR = 'unknown_error';
 
 export class BaseError extends Error {
+	previous?: Error
+	/** previousError must be passed when message is nullish */
+	constructor(public code: string | null, message?: string | null, public previousError?: Error) {
 
-	constructor(code, message, previousError) {
-
-		super(message);
-
+		super(message || undefined);
+		
 		Error.captureStackTrace(this, this.constructor);
-
+		
 		this.name = 'BaseError';
-
+		
 		if (!message && previousError) {
 			this.message = previousError.message;
 		}
-
-		this.code = code;
 
 		if (previousError) {
 			this.previous = previousError;
@@ -33,9 +32,9 @@ export const OPERATION_FAILED = 'operation_failed';
 
 export class TransmitError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'TransmitError';
 
@@ -45,9 +44,9 @@ export class TransmitError extends BaseError {
 
 export class ControlError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'ControlError';
 
@@ -57,9 +56,9 @@ export class ControlError extends BaseError {
 
 export class ReadError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'ReadError';
 
@@ -69,9 +68,9 @@ export class ReadError extends BaseError {
 
 export class WriteError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'WriteError';
 
@@ -81,9 +80,9 @@ export class WriteError extends BaseError {
 
 export class LoadAuthenticationKeyError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'LoadAuthenticationKeyError';
 
@@ -93,9 +92,9 @@ export class LoadAuthenticationKeyError extends BaseError {
 
 export class AuthenticationError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'AuthenticationError';
 
@@ -105,9 +104,9 @@ export class AuthenticationError extends BaseError {
 
 export class ConnectError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'ConnectError';
 
@@ -117,9 +116,9 @@ export class ConnectError extends BaseError {
 
 export class DisconnectError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'DisconnectError';
 
@@ -129,9 +128,9 @@ export class DisconnectError extends BaseError {
 
 export class GetUIDError extends BaseError {
 
-	constructor(code, message, previousError) {
+	constructor(...params: ConstructorParameters<typeof BaseError>) {
 
-		super(code, message, previousError);
+		super(...params);
 
 		this.name = 'GetUIDError';
 

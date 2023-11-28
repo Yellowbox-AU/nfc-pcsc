@@ -1,22 +1,6 @@
 "use strict";
 
 import Reader from './Reader';
-import {
-	ConnectError,
-	DisconnectError,
-	TransmitError,
-	ControlError,
-	AuthenticationError,
-	LoadAuthenticationKeyError,
-	ReadError,
-	WriteError,
-	GetUIDError,
-	CARD_NOT_CONNECTED,
-	OPERATION_FAILED,
-	UNKNOWN_ERROR,
-	FAILURE,
-} from './errors';
-
 
 class ACR122Reader extends Reader {
 
