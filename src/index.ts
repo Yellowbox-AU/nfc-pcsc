@@ -1,6 +1,6 @@
 "use strict";
 
-import NFC, { CardReader, PCSCLite } from './NFC';
+import NFC, { type CardReader, type PCSCLite } from './NFC';
 import Reader, {
 	TAG_ISO_14443_3,
 	TAG_ISO_14443_4,
