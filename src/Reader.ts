@@ -1,7 +1,7 @@
 "use strict";
 
 import EventEmitter from 'events';
-import { CardReader } from './NFC';
+import { type CardReader } from './NFC';
 import {
 	ConnectError,
 	DisconnectError,
